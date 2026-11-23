@@ -11,12 +11,15 @@
 .
 ├── frontend/                 Vue 3 + Vite + TypeScript 前端
 │   ├── src/views/WorkbenchView.vue|tsx  全部模块共享工作台
+│   ├── src/views/SharedPackageView.vue  共享包核对（授权/读取/审计）
 │   ├── src/data/modules.ts              18个业务模块配置
 │   ├── src/api/              统一请求封装
 │   └── vite.config.ts        dev server 配置（open: false）
 ├── backend/                  FastAPI（Python） 后端
 │   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
+│   ├── app/routers/shared_package.py  只读共享包接口
 │   ├── app/services/<key>.py    每个模块独立领域逻辑
+│   ├── app/services/shared_package.py  共享包授权与读取审计
 │   ├── app/services/base.py     共享服务骨架
 │   └── app/store.py          内存数据仓库与示例数据
 ├── .gitignore
@@ -70,6 +73,46 @@ npm run dev
 | 留存分析 | `retention_analysis` | 留存任务 | 任务名称、行为事件、留存天数 |
 | 漏斗分析器 | `funnel_analyzer` | 漏斗定义 | 漏斗名称、步骤序列、转化窗口小时 |
 | 多维数据集构建 | `cube_builder` | Cube定义 | Cube名称、事实表、维度组合 |
+
+## 只读共享包（跨部门核对）
+
+下钻路径原先只能读取本部门的全量明细，其他部门没有可核对的只读口径。现在
+新增「只读共享包」，把指定区域/维度的聚合明细按授权分享给接收部门：
+
+- 拥有方登记共享包（含华中 6 条、西北 4 条样本），只向接收部门授权华中；
+- 接收部门必须领取授权，授权签发只读凭据（聚合凭据）；
+- 打开/下钻只返回「包范围 ∩ 授权范围 ∩ 请求范围」内的样本，
+  组外样本（如西北）任何时刻都不会进入返回或核对记录；
+- 没有领取授权的部门既打不开包，也查不到包内样本；
+- 每次读取都写一条读记录 `shared_package_reads`，分别记录请求时和返回时的
+  授权状态、授权版本与包版本；
+- 返回前会重新复查授权：如果在返回数据前权限被撤销，本次不交付（`409`），
+  读记录标记为「已撤销未交付」；撤销后发起的新读取立即失效；
+- 拥有方仍可按读记录、交付摘要和当时版本追查这个包的来源与已交付汇总。
+
+仪表盘构建器在接收方视角先用共享包筛出可用聚合凭据，再把凭据用于下钻；
+下钻返回的事件明细与打开明细走同一套权限筛选。
+
+### 关键接口
+
+```text
+GET  /api/shared-packages?actor_dept=数据平台部            拥有方共享包与样本分布
+GET  /api/shared-packages/available?recipient_dept=运营分析部 接收方可见范围与聚合
+GET  /api/shared-packages/{id}                             拥有方全量 / 接收方受限视图
+POST /api/shared-packages/{id}/open                        打开聚合明细（留读记录）
+POST /api/shared-packages/{id}/drill                       下钻事件明细（留读记录）
+POST /api/shared-packages/{id}/grants?owner_dept=…         签发只读授权与凭据
+POST /api/shared-packages/{id}/grants/{grant_id}/revoke?owner_dept=…  撤销授权
+GET  /api/shared-packages/{id}/reads?owner_dept=…          拥有方追查读记录
+GET  /api/shared-packages/reads/{read_id}                  按读记录核对请求/返回时授权
+POST /api/drill-path/{rule_id}/execute                     执行绑定共享包的下钻规则
+GET  /api/dashboard-builder/credentials?recipient_dept=…   仪表盘筛选可用聚合凭据
+GET  /api/dashboard-builder/{id}/data?recipient_dept=…     仪表盘按凭据下钻取数
+```
+
+`open`/`drill` 支持 `hold_ms`（≤15000）把返回延后，便于验证「返回前撤销」的交错场景。
+前端新增「共享包核对」页（`/shared-packages`），可切换部门分别查看拥有方授权、
+接收方读取和读记录核对。回归测试：`cd backend && .venv/bin/python -m pytest tests -q`。
 
 ## 约定
 

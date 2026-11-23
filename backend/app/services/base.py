@@ -93,11 +93,16 @@ class BaseModuleService:
         data: dict[str, Any] = {}
         for field in self.LIST_FIELDS:
             col = _to_column_name(field)
+            # 列表里把状态字段借用作展示位的（如导出/订阅的“状态”列），不要覆盖真实 status。
+            if col == "status":
+                continue
             data[col] = values.get(field, "")
         if "name" not in data and self.LIST_FIELDS:
             data["name"] = values.get(self.LIST_FIELDS[0], "")
         data["status"] = self.STATUS_ORDER[0]
 
+        columns = {row["name"] for row in db.fetchall(f"PRAGMA table_info({table})")}
+        data = {key: value for key, value in data.items() if key in columns}
         entry_id = db.insert(table, data)
         entry = db.fetchone(f"SELECT * FROM {table} WHERE id=?", [entry_id])
         return entry, []

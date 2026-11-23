@@ -353,6 +353,109 @@ DDL_STATEMENTS = [
         daily_calls INTEGER DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
+
+    # ==================== Read-only Shared Package Tier ====================
+    # 只读共享包：拥有方把指定区域/维度的聚合明细授权给接收部门核对。
+    """CREATE TABLE IF NOT EXISTS shared_packages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        package_name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        owner_dept TEXT NOT NULL,
+        source_module TEXT NOT NULL DEFAULT 'drill_path',
+        source_ref TEXT NOT NULL DEFAULT '',
+        data_scope TEXT NOT NULL DEFAULT '[]',
+        dimensions TEXT NOT NULL DEFAULT '[]',
+        data_version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT '草稿',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_sp_owner ON shared_packages(owner_dept)",
+
+    """CREATE TABLE IF NOT EXISTS shared_package_grants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        package_id INTEGER NOT NULL,
+        recipient_dept TEXT NOT NULL,
+        regions TEXT NOT NULL DEFAULT '[]',
+        dimensions TEXT NOT NULL DEFAULT '[]',
+        grant_version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT '已授权',
+        issued_by TEXT NOT NULL DEFAULT '',
+        issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+        revoked_by TEXT,
+        revoked_at TEXT,
+        FOREIGN KEY (package_id) REFERENCES shared_packages(id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_spg_pkg ON shared_package_grants(package_id, recipient_dept)",
+
+    """CREATE TABLE IF NOT EXISTS shared_package_credentials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token TEXT NOT NULL UNIQUE,
+        package_id INTEGER NOT NULL,
+        grant_id INTEGER NOT NULL,
+        recipient_dept TEXT NOT NULL,
+        regions TEXT NOT NULL DEFAULT '[]',
+        dimensions TEXT NOT NULL DEFAULT '[]',
+        grant_version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT '有效',
+        issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+        revoked_at TEXT,
+        FOREIGN KEY (package_id) REFERENCES shared_packages(id),
+        FOREIGN KEY (grant_id) REFERENCES shared_package_grants(id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_spc_token ON shared_package_credentials(token)",
+    "CREATE INDEX IF NOT EXISTS idx_spc_grant ON shared_package_credentials(grant_id)",
+
+    """CREATE TABLE IF NOT EXISTS shared_package_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        package_id INTEGER NOT NULL,
+        sample_key TEXT NOT NULL,
+        region TEXT NOT NULL,
+        dimension_key TEXT NOT NULL DEFAULT '',
+        event_name TEXT NOT NULL DEFAULT '',
+        measure REAL NOT NULL DEFAULT 0.0,
+        occurred_at TEXT NOT NULL,
+        attrs TEXT NOT NULL DEFAULT '{}',
+        data_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (package_id) REFERENCES shared_packages(id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_sps_pkg_region ON shared_package_samples(package_id, region)",
+
+    """CREATE TABLE IF NOT EXISTS shared_package_reads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        read_id TEXT NOT NULL UNIQUE,
+        package_id INTEGER NOT NULL,
+        grant_id INTEGER,
+        credential_id INTEGER,
+        credential_token TEXT,
+        recipient_dept TEXT NOT NULL DEFAULT '',
+        operation TEXT NOT NULL DEFAULT 'open',
+        request_time TEXT NOT NULL,
+        request_auth_status TEXT NOT NULL,
+        request_grant_version INTEGER,
+        request_package_version INTEGER,
+        request_scope TEXT NOT NULL DEFAULT '[]',
+        return_time TEXT,
+        return_auth_status TEXT NOT NULL,
+        return_grant_version INTEGER,
+        return_package_version INTEGER,
+        return_scope TEXT NOT NULL DEFAULT '[]',
+        outcome TEXT NOT NULL DEFAULT '未授权',
+        delivered_count INTEGER NOT NULL DEFAULT 0,
+        delivered_regions TEXT NOT NULL DEFAULT '[]',
+        delivered_sample_ids TEXT NOT NULL DEFAULT '[]',
+        delivered_hash TEXT NOT NULL DEFAULT '',
+        delivered_rows TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (package_id) REFERENCES shared_packages(id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_spr_pkg ON shared_package_reads(package_id, id)",
+    "CREATE INDEX IF NOT EXISTS idx_spr_read ON shared_package_reads(read_id)",
+]
+
+# 轻量迁移：为已有库补列（CREATE TABLE IF NOT EXISTS 不会改旧表结构）。
+COLUMN_MIGRATIONS = [
+    ("drill_rules", "package_id", "ALTER TABLE drill_rules ADD COLUMN package_id INTEGER"),
 ]
 
 
@@ -373,6 +476,10 @@ class AnalyticsDB:
         conn.execute("PRAGMA busy_timeout=5000")
         for stmt in DDL_STATEMENTS:
             conn.execute(stmt)
+        for table, column, alter in COLUMN_MIGRATIONS:
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if existing and column not in existing:
+                conn.execute(alter)
         conn.commit()
         conn.close()
 

@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import db
 from app.pipeline import seed_real_data
-from app.routers import ROUTERS, PIPELINE_ROUTER
+from app.routers import ROUTERS, PIPELINE_ROUTER, EXTRA_ROUTERS
+from app.services import shared_package
 from app.store import store
 
 app = FastAPI(title="实时数据分析与可视化应用平台", version="1.0.0")
@@ -35,6 +36,8 @@ def startup_seed() -> None:
             print(f"[seed] 数据集初始化完成: {counts}")
         else:
             print(f"[seed] 数据集已存在，跳过初始化 (metrics={existing})")
+        sharing_counts = shared_package.seed_demo_data()
+        print(f"[seed] 只读共享包: {sharing_counts}")
     except Exception as e:
         print(f"[seed] 初始化失败: {e}")
 
@@ -51,6 +54,10 @@ def overview() -> dict[str, object]:
 
 # 管道路由：数据分析核心入口
 app.include_router(PIPELINE_ROUTER)
+
+# 共享包路由：固定前缀，先于通用资源路由注册
+for extra in EXTRA_ROUTERS:
+    app.include_router(extra)
 
 # 资源路由含 /api/{module}，必须放在 health / overview 之后注册
 for module in ROUTERS:
